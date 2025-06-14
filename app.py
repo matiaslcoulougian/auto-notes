@@ -1,49 +1,73 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
-from io import BytesIO
 
-st.title("📊 Cargar datos de Yahoo Finance")
-st.write("Subí un archivo Excel con acciones y completaremos: precio actual, hace 1 año, mínimo y target.")
+# Título de la app
+st.title("Structured Investment Pro 📈")
 
-uploaded_file = st.file_uploader("📁 Soltá el archivo Excel acá", type=["xlsx"])
-
-if uploaded_file:
-    df = pd.read_excel(uploaded_file, header=3)
-    df.columns = [str(col).strip().lower() for col in df.columns]
-
-    st.success("Archivo cargado correctamente.")
-
-    # Agregá tickers manualmente (luego podés automatizar esta parte)
-    tickers = {
-        1: "COP",
-        3: "BAC",
-        # agregá más filas y tickers si querés
+# -- Session State para persistencia de datos temporales --
+if "notas" not in st.session_state:
+    st.session_state["notas"] = []
+if "pesos" not in st.session_state:
+    st.session_state["pesos"] = {
+        "Tasa": 0.15,
+        "Colchón": 0.34,
+        "Memory": 0.24,
+        "Target Yahoo": 0.09,
+        "Target MS": 0.09,
+        "1 Año": 0.09,
+        "Mín 1 Año": 0.09,
     }
 
-    for col in ['precio actual', 'target yhoo', 'hace 1 año', 'min 1y']:
-        if col not in df.columns:
-            df[col] = None
+# -- Formulario de Inputs --
+with st.form("input_form", clear_on_submit=True):
+    st.subheader("Agregar nueva nota")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        ticker = st.text_input("Ticker", max_chars=8)
+    with col2:
+        tasa = st.number_input("Tasa (%)", min_value=0.0, max_value=100.0, step=0.01)
+    with col3:
+        colchon = st.number_input("Colchón (%)", min_value=0.0, max_value=100.0, step=0.01)
+    with col4:
+        memory = st.checkbox("Memory", value=False)
+    submitted = st.form_submit_button("Agregar nota")
 
-    if st.button("🚀 Ejecutar búsqueda de datos"):
-        for i, ticker in tickers.items():
-            try:
-                data = yf.Ticker(ticker)
-                hist = data.history(period="1y")
+    # Al agregar, guardamos en session_state
+    if submitted:
+        if ticker and len(st.session_state["notas"]) < 20:
+            st.session_state["notas"].append({
+                "Ticker": ticker.upper(),
+                "Tasa": tasa,
+                "Colchón": colchon,
+                "Memory": memory,
+            })
+        elif not ticker:
+            st.warning("Ingrese un ticker válido.")
+        elif len(st.session_state["notas"]) >= 20:
+            st.warning("Máximo 20 notas.")
 
-                if not hist.empty:
-                    df.at[i, 'precio actual'] = hist['Close'].iloc[-1]
-                    df.at[i, 'hace 1 año'] = hist['Close'].iloc[0]
-                    df.at[i, 'min 1y'] = hist['Close'].min()
-                    df.at[i, 'target yhoo'] = data.info.get('targetMeanPrice', None)
+# -- Edición de Pesos Ponderados --
+with st.expander("⚙️ Configurar pesos del motor"):
+    st.write("Modifique los pesos de cada variable (suma no obligatoria = 1):")
+    for key in st.session_state["pesos"]:
+        valor = st.number_input(
+            f"Peso para {key}",
+            min_value=0.0, max_value=1.0, step=0.01,
+            value=float(st.session_state["pesos"][key]),
+            key=f"peso_{key}"
+        )
+        st.session_state["pesos"][key] = valor
 
-            except Exception as e:
-                st.warning(f"Error con {ticker}: {e}")
+# -- Visualización de la tabla de notas --
+st.subheader("Notas cargadas")
+if st.session_state["notas"]:
+    df = pd.DataFrame(st.session_state["notas"])
+    st.dataframe(df, use_container_width=True)
+    st.info(f"Total notas cargadas: {len(st.session_state['notas'])}/20")
+else:
+    st.info("No hay notas cargadas aún.")
 
-        # Exportar como archivo descargable
-        output = BytesIO()
-        df.to_excel(output, index=False)
-        output.seek(0)
-
-        st.success("✅ Archivo procesado. Podés descargarlo abajo.")
-        st.download_button("📥 Descargar Excel", output, file_name="notas_actualizadas.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+# -- Botón para limpiar entradas (opcional) --
+if st.button("Limpiar todas las notas"):
+    st.session_state["notas"] = []
+    st.success("Notas eliminadas.")
