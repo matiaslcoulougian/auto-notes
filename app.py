@@ -17,6 +17,8 @@ if "pesos" not in st.session_state:
         "1 Año": 0.09,
         "Mín 1 Año": 0.09,
     }
+if "reset" not in st.session_state:
+    st.session_state["reset"] = False
 
 # -- Formulario de Inputs --
 with st.form("input_form", clear_on_submit=True):
@@ -24,10 +26,10 @@ with st.form("input_form", clear_on_submit=True):
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         ticker = st.text_input("Ticker", max_chars=8)
-    with col2:
-        tasa = st.number_input("Tasa (%)", min_value=0.0, max_value=100.0, step=0.01)
+    with col2: # format in 0.00
+        tasa = st.number_input("Tasa (%)", min_value=0.0, max_value=100.0, step=1.0, format="%.2f")
     with col3:
-        colchon = st.number_input("Colchón (%)", min_value=0.0, max_value=100.0, step=0.01)
+        colchon = st.number_input("Colchón (%)", min_value=0.0, max_value=100.0, step=1.0, format="%.2f")
     with col4:
         memory = st.checkbox("Memory", value=False)
     submitted = st.form_submit_button("Agregar nota")
@@ -67,7 +69,8 @@ if st.session_state["notas"]:
 else:
     st.info("No hay notas cargadas aún.")
 
-# -- Botón para limpiar entradas (opcional) --
+# -- Botón para limpiar entradas --
 if st.button("Limpiar todas las notas"):
     st.session_state["notas"] = []
-    st.success("Notas eliminadas.")
+    st.session_state["reset"] = True
+    st.rerun()
