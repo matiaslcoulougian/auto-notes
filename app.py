@@ -8,6 +8,14 @@ from openpyxl.styles import PatternFill
 import io
 import datetime
 
+# Configure Streamlit page to wide mode
+st.set_page_config(
+    page_title="Structured Investment Pro",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
 
 # --- Función auxiliar para obtener el mínimo de 52 semanas desde Yahoo Finance ---
 def obtener_min_52_semanas(ticker):
