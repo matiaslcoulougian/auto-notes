@@ -4,6 +4,9 @@ import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import time
+from openpyxl.styles import PatternFill
+import io
+import datetime
 
 
 # --- Función para buscar datos en Yahoo Finance ---
@@ -239,10 +242,57 @@ if st.session_state["notas"]:
                 return ""
         return ""
 
+
+    def exportar_excel_semaforo(df):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Notas")
+            workbook = writer.book
+            worksheet = writer.sheets["Notas"]
+            # Determinar la columna "Score"
+            score_col = None
+            for idx, col in enumerate(df.columns, 1):
+                if col == "Score":
+                    score_col = idx
+                    break
+            # Solo si hay Score y más de 1 nota
+            if score_col is not None and len(df) > 0:
+                valores = df["Score"].values
+                max_score = max(valores)
+                min_score = min(valores)
+                for row in range(2, len(df) + 2):  # Desde fila 2 (1 es header)
+                    cell = worksheet.cell(row=row, column=score_col)
+                    val = cell.value
+                    # Definir color según score
+                    if max_score - min_score > 0:
+                        rel_val = (val - min_score) / (max_score - min_score)
+                    else:
+                        rel_val = 1  # Todos iguales, poner verde
+                    if rel_val >= 0.66:
+                        fill = PatternFill(start_color="99FF99", end_color="99FF99", fill_type="solid")  # Verde
+                    elif rel_val >= 0.33:
+                        fill = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")  # Amarillo
+                    else:
+                        fill = PatternFill(start_color="FF9999", end_color="FF9999", fill_type="solid")  # Rojo
+                    cell.fill = fill
+        output.seek(0)
+        return output
+
     if "Score" in df.columns:
         st.dataframe(
-            df.style.applymap(color_semaforo, subset=["Score"]),
+            df.style.map(color_semaforo, subset=["Score"]),
             use_container_width=True
         )
     else:
         st.dataframe(df, use_container_width=True)
+
+    # Botón para exportar a Excel
+    if "Score" in df.columns and not df["Score"].isnull().all():
+        excel_data = exportar_excel_semaforo(df)
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        st.download_button(
+            label="📥 Descargar Excel con Resultados",
+            data=excel_data,
+            file_name="notas_scoring_{}.xlsx".format(today),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
