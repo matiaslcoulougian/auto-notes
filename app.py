@@ -16,7 +16,8 @@ def obtener_datos_yahoo(ticker):
 
         precio_actual = hist['Close'].iloc[-1]
         hace_1_anio = hist['Close'].iloc[0]
-        min_1y = hist['Close'].min()
+        # TODO: get this data from scrapping yahoo finance.
+        min_1y = 53.51
         target_yhoo = data.info.get('targetMeanPrice', None)
 
         return precio_actual, target_yhoo, hace_1_anio, min_1y
@@ -26,6 +27,7 @@ def obtener_datos_yahoo(ticker):
 
 
 # --- Scraping Target Price Morgan Stanley ---
+#TODO: Use https://www.tipranks.com/stocks/c/forecast instead.
 def obtener_target_morgan(ticker):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -159,3 +161,88 @@ if st.button("Limpiar todas las notas"):
     st.session_state["notas"] = []
     st.session_state["reset"] = True
     st.rerun()
+
+
+# -- Cálculo de Score (según lógica del PRD) --
+def calcular_score(nota, pesos):
+    # Extraer valores, convertir None a 0
+    tasa = nota.get("Tasa") or 0
+    colchon = nota.get("Colchón") or 0
+    memory = 1 if nota.get("Memory") else 0
+    precio_actual = nota.get("Precio actual") or 0
+    target_yahoo = nota.get("Target Yahoo") or 0
+    target_morgan = nota.get("Target Morgan") or 0
+    hace_1_anio = nota.get("Hace 1 año") or 0
+    min_1_anio = nota.get("Mín 1 año") or 0
+
+    # Pesos
+    p_tasa = pesos["Tasa"]
+    p_colchon = pesos["Colchón"]
+    p_memory = pesos["Memory"]
+    p_yahoo = pesos["Target Yahoo"]
+    p_ms = pesos["Target MS"]
+    p_1y = pesos["1 Año"]
+    p_min1y = pesos["Mín 1 Año"]
+
+    # Trigger
+    try:
+        trigger = precio_actual * (100 - colchon) / 100 if precio_actual and colchon is not None else 0
+    except Exception:
+        trigger = 0
+
+    # Evitar divisiones por cero
+    def safe_div(n, d):
+        try:
+            return n / d if d else 0
+        except:
+            return 0
+
+    # Términos polinómicos
+    t1 = tasa * p_tasa / 20
+    t2 = colchon * p_colchon / 100
+    t3 = memory * p_memory
+    t4 = ((safe_div(target_yahoo, precio_actual) - 1) * p_yahoo if precio_actual else 0)
+    t5 = ((safe_div(target_morgan, precio_actual) - 1) * p_ms if precio_actual else 0)
+    t6 = (safe_div(hace_1_anio, trigger) * p_1y if trigger else 0)
+    t7 = (safe_div(min_1_anio, trigger) * p_min1y if trigger else 0)
+
+    score = t1 + t2 + t3 + t4 + t5 + t6 + t7
+    return score
+
+# -- Calcular Score para cada nota --
+if st.session_state["notas"]:
+    if st.button("Calcular Score"):
+        nuevas_notas = []
+        pesos = st.session_state["pesos"]
+        for nota in st.session_state["notas"]:
+            nota_actualizada = nota.copy()
+            score = calcular_score(nota, pesos)
+            nota_actualizada["Score"] = score
+            nuevas_notas.append(nota_actualizada)
+        st.session_state["notas"] = nuevas_notas
+        st.success("Score calculado para todas las notas.")
+
+    # -- Mostrar tabla con Score y semáforo --
+    df = pd.DataFrame(st.session_state["notas"])
+
+    def color_semaforo(val):
+        # Colores tipo semáforo según score (ajustá los rangos si querés)
+        if "Score" in df.columns:
+            try:
+                if val >= df["Score"].max() * 0.66:
+                    return "background-color: #2ecc40; color: black;"  # Verde
+                elif val >= df["Score"].max() * 0.33:
+                    return "background-color: #ffe066; color: black;"  # Amarillo
+                else:
+                    return "background-color: #ff7f7f; color: black;"  # Rojo
+            except:
+                return ""
+        return ""
+
+    if "Score" in df.columns:
+        st.dataframe(
+            df.style.applymap(color_semaforo, subset=["Score"]),
+            use_container_width=True
+        )
+    else:
+        st.dataframe(df, use_container_width=True)
