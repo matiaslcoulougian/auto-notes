@@ -187,6 +187,52 @@ def obtener_target_morgan(ticker):
         return None
 
 
+# -- Cálculo de Score (según lógica del PRD) --
+def calcular_score(nota, pesos):
+    # Extraer valores, convertir None a 0
+    tasa = nota.get("Tasa") or 0
+    colchon = nota.get("Colchón") or 0
+    memory = 1 if nota.get("Memory") else 0
+    precio_actual = nota.get("Precio actual") or 0
+    target_yahoo = nota.get("Target Yahoo") or 0
+    target_morgan = nota.get("Target MS") or 0
+    hace_1_anio = nota.get("Hace 1 año") or 0
+    min_1_anio = nota.get("Mín 1 año") or 0
+
+    # Pesos
+    p_tasa = pesos["Tasa"]
+    p_colchon = pesos["Colchón"]
+    p_memory = pesos["Memory"]
+    p_yahoo = pesos["Target Yahoo"]
+    p_ms = pesos["Target MS"]
+    p_1y = pesos["1 Año"]
+    p_min1y = pesos["Mín 1 Año"]
+
+    # Trigger
+    try:
+        trigger = precio_actual * (100 - colchon) / 100 if precio_actual and colchon is not None else 0
+    except Exception:
+        trigger = 0
+
+    # Evitar divisiones por cero
+    def safe_div(n, d):
+        try:
+            return n / d if d else 0
+        except:
+            return 0
+
+    # Términos polinómicos
+    t1 = tasa * p_tasa / 20
+    t2 = colchon * p_colchon / 100
+    t3 = memory * p_memory
+    t4 = ((safe_div(target_yahoo, precio_actual) - 1) * p_yahoo if precio_actual else 0)
+    t5 = ((safe_div(target_morgan, precio_actual) - 1) * p_ms if precio_actual else 0)
+    t6 = (safe_div(hace_1_anio, trigger) * p_1y if trigger else 0)
+    t7 = (safe_div(min_1_anio, trigger) * p_min1y if trigger else 0)
+
+    score = t1 + t2 + t3 + t4 + t5 + t6 + t7
+    return round(score, 2)
+
 # Título de la app
 st.title("Structured Investment Pro 📈")
 
@@ -257,9 +303,11 @@ with st.form("input_form", clear_on_submit=True):
                     st.success(f"✅ {ticker.upper()} listo con score {score}!")
                     
                 except Exception as e:
-                    # Si hay error en la búsqueda, agregar solo los datos básicos
+                    # Si hay error en la búsqueda, agregar solo los datos básicos con score
+                    score = calcular_score(nueva_nota, st.session_state["pesos"])
+                    nueva_nota["Score"] = score
                     st.session_state["notas"].append(nueva_nota)
-                    st.warning(f"⚠️ {ticker.upper()} agregado, pero hubo problemas obteniendo algunos datos de internet.")
+                    st.warning(f"⚠️ {ticker.upper()} agregado con score {score}, pero hubo problemas obteniendo algunos datos de internet.")
                     
         elif not ticker:
             st.warning("Ingrese un ticker válido.")
@@ -282,9 +330,6 @@ with st.expander("⚙️ Configurar pesos del motor"):
 st.subheader("Notas cargadas")
 if st.session_state["notas"]:
     df = pd.DataFrame(st.session_state["notas"])
-
-    # Mostrar tabla con opción de edición
-    df = pd.DataFrame(st.session_state["notas"])
     
     # Check if we have internet-sourced data to edit
     has_internet_data = any(
@@ -292,16 +337,117 @@ if st.session_state["notas"]:
         for nota in st.session_state["notas"]
     )
     
-    # Always show the table first
-    st.dataframe(df, use_container_width=True)
+    # Funciones para el semáforo
+    def calcular_percentil_score(val, scores):
+        """
+        Calcula el percentil relativo de un valor dentro del rango de scores.
+        Retorna un valor entre 0 y 1.
+        """
+        if len(scores) == 0:
+            return 1
+        
+        max_score = max(scores)
+        min_score = min(scores)
+        
+        if max_score - min_score > 0:
+            return (val - min_score) / (max_score - min_score)
+        else:
+            return 1  # Todos los scores son iguales, asignar el mejor color
+
+    def color_semaforo(val):
+        # Colores tipo semáforo usando percentiles relativos (igual que Excel)
+        if "Score" in df.columns:
+            try:
+                scores = df["Score"].dropna().values
+                if len(scores) > 0:
+                    percentil = calcular_percentil_score(val, scores)
+                    
+                    if percentil >= 0.66:
+                        return "background-color: #99FF99; color: black;"  # Verde (mismo que Excel)
+                    elif percentil >= 0.33:
+                        return "background-color: #FFFF99; color: black;"  # Amarillo (mismo que Excel)
+                    else:
+                        return "background-color: #FF9999; color: black;"  # Rojo (mismo que Excel)
+            except:
+                return ""
+        return ""
     
-    # Show edit button below table if there's internet data
+    # Mostrar tabla única con semáforo si hay scores
+    if "Score" in df.columns:
+        # Formatear columnas numéricas a 2 decimales
+        numeric_columns = ["Tasa", "Colchón", "Precio actual", "Target Yahoo", "Hace 1 año", "Mín 1 año", "Target MS", "Score"]
+        format_dict = {}
+        for col in numeric_columns:
+            if col in df.columns:
+                format_dict[col] = "{:.2f}"
+        
+        st.dataframe(
+            df.style.map(color_semaforo, subset=["Score"]).format(format_dict),
+            use_container_width=True
+        )
+    else:
+        # Formatear columnas numéricas a 2 decimales (sin semáforo)
+        numeric_columns = ["Tasa", "Colchón", "Precio actual", "Target Yahoo", "Hace 1 año", "Mín 1 año", "Target MS", "Score"]
+        format_dict = {}
+        for col in numeric_columns:
+            if col in df.columns:
+                format_dict[col] = "{:.2f}"
+        
+        st.dataframe(df.style.format(format_dict), use_container_width=True)
+    
+    # Botones debajo de la tabla
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    # Show edit button if there's internet data
     if has_internet_data:
-        col1, col2, col3 = st.columns([2, 1, 1])
-        with col1:  # Left-aligned column
+        with col1:
             if st.button("✏️ Editar", help="Editar valores obtenidos de internet", key="edit_btn"):
                 st.session_state["edit_mode"] = True
                 st.rerun()
+    
+    # Botón para exportar a Excel (solo si hay scores)
+    if "Score" in df.columns and not df["Score"].isnull().all():
+        def exportar_excel_semaforo(df):
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="Notas")
+                workbook = writer.book
+                worksheet = writer.sheets["Notas"]
+                # Determinar la columna "Score"
+                score_col = None
+                for idx, col in enumerate(df.columns, 1):
+                    if col == "Score":
+                        score_col = idx
+                        break
+                # Solo si hay Score y más de 1 nota
+                if score_col is not None and len(df) > 0:
+                    scores = df["Score"].dropna().values
+                    for row in range(2, len(df) + 2):  # Desde fila 2 (1 es header)
+                        cell = worksheet.cell(row=row, column=score_col)
+                        val = cell.value
+                        if val is not None:
+                            # Usar la misma lógica de percentiles que la UI
+                            percentil = calcular_percentil_score(val, scores)
+                            
+                            if percentil >= 0.66:
+                                fill = PatternFill(start_color="99FF99", end_color="99FF99", fill_type="solid")  # Verde
+                            elif percentil >= 0.33:
+                                fill = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")  # Amarillo
+                            else:
+                                fill = PatternFill(start_color="FF9999", end_color="FF9999", fill_type="solid")  # Rojo
+                            cell.fill = fill
+            output.seek(0)
+            return output
+        
+        with col2:
+            excel_data = exportar_excel_semaforo(df)
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            st.download_button(
+                label="📥 Descargar Excel",
+                data=excel_data,
+                file_name="notas_scoring_{}.xlsx".format(today),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     
     st.info(f"Total notas cargadas: {len(st.session_state['notas'])}/20")
     
@@ -323,7 +469,7 @@ if st.session_state.get("edit_mode", False):
             st.warning(f"⚠️ ¿Estás seguro de eliminar {ticker_to_delete}?")
             col1, col2, col3 = st.columns([1, 1, 2])
             with col1:
-                if st.button(f"✅ Sí, eliminar {ticker_to_delete}", key="confirm_delete_modal"):
+                if st.button("✅", key="confirm_delete_modal"):
                     st.session_state["notas"].pop(confirm_delete_index)
                     st.session_state["confirm_delete_index"] = None
                     # Si no quedan notas, cerrar el modal
@@ -334,13 +480,13 @@ if st.session_state.get("edit_mode", False):
                         st.success(f"🗑️ {ticker_to_delete} eliminado correctamente!")
                     st.rerun()
             with col2:
-                if st.button("❌ Cancelar", key="cancel_delete_modal"):
+                if st.button("❌", key="cancel_delete_modal"):
                     st.session_state["confirm_delete_index"] = None
                     st.rerun()
         
         # Botones de eliminación individuales
         if len(st.session_state["notas"]) > 0:
-            st.subheader("🗑️ Eliminar notas")
+            st.subheader("Eliminar notas")
             cols = st.columns(len(st.session_state["notas"]))
             for i, nota in enumerate(st.session_state["notas"]):
                 with cols[i]:
@@ -456,167 +602,23 @@ if st.session_state.get("edit_mode", False):
             # Form buttons
             col1, col2, col3 = st.columns([1, 1, 2])
             with col1:
-                if st.form_submit_button("💾 Guardar", type="primary"):
+                if st.form_submit_button("Guardar", type="primary"):
+                    # Recalcular scores para todas las notas editadas
+                    for nota in edited_notas:
+                        score = calcular_score(nota, st.session_state["pesos"])
+                        nota["Score"] = score
+                    
                     st.session_state["notas"] = edited_notas
                     st.session_state["edit_mode"] = False
-                    st.success("Cambios guardados exitosamente!")
+                    st.success("Cambios guardados y scores recalculados exitosamente!")
                     st.rerun()
             with col2:
-                if st.form_submit_button("❌ Cancelar"):
+                if st.form_submit_button("Cancelar"):
                     st.session_state["edit_mode"] = False
                     st.rerun()
     edit_modal()
 
 
-
-
-
-# -- Cálculo de Score (según lógica del PRD) --
-def calcular_score(nota, pesos):
-    # Extraer valores, convertir None a 0
-    tasa = nota.get("Tasa") or 0
-    colchon = nota.get("Colchón") or 0
-    memory = 1 if nota.get("Memory") else 0
-    precio_actual = nota.get("Precio actual") or 0
-    target_yahoo = nota.get("Target Yahoo") or 0
-    target_morgan = nota.get("Target MS") or 0
-    hace_1_anio = nota.get("Hace 1 año") or 0
-    min_1_anio = nota.get("Mín 1 año") or 0
-
-    # Pesos
-    p_tasa = pesos["Tasa"]
-    p_colchon = pesos["Colchón"]
-    p_memory = pesos["Memory"]
-    p_yahoo = pesos["Target Yahoo"]
-    p_ms = pesos["Target MS"]
-    p_1y = pesos["1 Año"]
-    p_min1y = pesos["Mín 1 Año"]
-
-    # Trigger
-    try:
-        trigger = precio_actual * (100 - colchon) / 100 if precio_actual and colchon is not None else 0
-    except Exception:
-        trigger = 0
-
-    # Evitar divisiones por cero
-    def safe_div(n, d):
-        try:
-            return n / d if d else 0
-        except:
-            return 0
-
-    # Términos polinómicos
-    t1 = tasa * p_tasa / 20
-    t2 = colchon * p_colchon / 100
-    t3 = memory * p_memory
-    t4 = ((safe_div(target_yahoo, precio_actual) - 1) * p_yahoo if precio_actual else 0)
-    t5 = ((safe_div(target_morgan, precio_actual) - 1) * p_ms if precio_actual else 0)
-    t6 = (safe_div(hace_1_anio, trigger) * p_1y if trigger else 0)
-    t7 = (safe_div(min_1_anio, trigger) * p_min1y if trigger else 0)
-
-    score = t1 + t2 + t3 + t4 + t5 + t6 + t7
-    return round(score, 2)
-
-# -- Calcular Score para cada nota --
-if st.session_state["notas"]:
-    if st.button("Calcular Score"):
-        nuevas_notas = []
-        pesos = st.session_state["pesos"]
-        for nota in st.session_state["notas"]:
-            nota_actualizada = nota.copy()
-            score = calcular_score(nota, pesos)
-            nota_actualizada["Score"] = score
-            nuevas_notas.append(nota_actualizada)
-        st.session_state["notas"] = nuevas_notas
-        st.success("Score calculado para todas las notas.")
-
-    # -- Mostrar tabla con Score y semáforo --
-    df = pd.DataFrame(st.session_state["notas"])
-
-    def calcular_percentil_score(val, scores):
-        """
-        Calcula el percentil relativo de un valor dentro del rango de scores.
-        Retorna un valor entre 0 y 1.
-        """
-        if len(scores) == 0:
-            return 1
-        
-        max_score = max(scores)
-        min_score = min(scores)
-        
-        if max_score - min_score > 0:
-            return (val - min_score) / (max_score - min_score)
-        else:
-            return 1  # Todos los scores son iguales, asignar el mejor color
-
-    def color_semaforo(val):
-        # Colores tipo semáforo usando percentiles relativos (igual que Excel)
-        if "Score" in df.columns:
-            try:
-                scores = df["Score"].dropna().values
-                if len(scores) > 0:
-                    percentil = calcular_percentil_score(val, scores)
-                    
-                    if percentil >= 0.66:
-                        return "background-color: #99FF99; color: black;"  # Verde (mismo que Excel)
-                    elif percentil >= 0.33:
-                        return "background-color: #FFFF99; color: black;"  # Amarillo (mismo que Excel)
-                    else:
-                        return "background-color: #FF9999; color: black;"  # Rojo (mismo que Excel)
-            except:
-                return ""
-        return ""
-
-    def exportar_excel_semaforo(df):
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Notas")
-            workbook = writer.book
-            worksheet = writer.sheets["Notas"]
-            # Determinar la columna "Score"
-            score_col = None
-            for idx, col in enumerate(df.columns, 1):
-                if col == "Score":
-                    score_col = idx
-                    break
-            # Solo si hay Score y más de 1 nota
-            if score_col is not None and len(df) > 0:
-                scores = df["Score"].dropna().values
-                for row in range(2, len(df) + 2):  # Desde fila 2 (1 es header)
-                    cell = worksheet.cell(row=row, column=score_col)
-                    val = cell.value
-                    if val is not None:
-                        # Usar la misma lógica de percentiles que la UI
-                        percentil = calcular_percentil_score(val, scores)
-                        
-                        if percentil >= 0.66:
-                            fill = PatternFill(start_color="99FF99", end_color="99FF99", fill_type="solid")  # Verde
-                        elif percentil >= 0.33:
-                            fill = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")  # Amarillo
-                        else:
-                            fill = PatternFill(start_color="FF9999", end_color="FF9999", fill_type="solid")  # Rojo
-                        cell.fill = fill
-        output.seek(0)
-        return output
-
-    if "Score" in df.columns:
-        st.dataframe(
-            df.style.map(color_semaforo, subset=["Score"]),
-            use_container_width=True
-        )
-    else:
-        st.dataframe(df, use_container_width=True)
-
-    # Botón para exportar a Excel
-    if "Score" in df.columns and not df["Score"].isnull().all():
-        excel_data = exportar_excel_semaforo(df)
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        st.download_button(
-            label="📥 Descargar Excel con Resultados",
-            data=excel_data,
-            file_name="notas_scoring_{}.xlsx".format(today),
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
 
 # -- Firma del autor --
 st.markdown("---")
