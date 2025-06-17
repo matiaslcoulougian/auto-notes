@@ -222,15 +222,45 @@ with st.form("input_form", clear_on_submit=True):
         memory = st.checkbox("Memory", value=False)
     submitted = st.form_submit_button("Agregar nota")
 
-    # Al agregar, guardamos en session_state
+    # Al agregar, guardamos en session_state y buscamos datos automáticamente
     if submitted:
         if ticker and len(st.session_state["notas"]) < 20:
-            st.session_state["notas"].append({
-                "Ticker": ticker.upper(),
-                "Tasa": tasa,
-                "Colchón": colchon,
-                "Memory": memory,
-            })
+            # Mostrar spinner mientras se buscan los datos
+            with st.spinner(f"Agregando {ticker.upper()}..."):
+                # Crear nota básica
+                nueva_nota = {
+                    "Ticker": ticker.upper(),
+                    "Tasa": tasa,
+                    "Colchón": colchon,
+                    "Memory": memory,
+                }
+                
+                # Buscar datos de internet automáticamente
+                try:
+                    # --- Yahoo Finance ---
+                    precio_actual, target_yhoo, hace_1_anio, min_1y = obtener_datos_yahoo(ticker.upper())
+                    # --- Morgan Stanley ---
+                    target_morgan = obtener_target_morgan(ticker.upper())
+                    
+                    # Agregar datos obtenidos a la nota
+                    nueva_nota["Precio actual"] = precio_actual
+                    nueva_nota["Target Yahoo"] = target_yhoo
+                    nueva_nota["Hace 1 año"] = hace_1_anio
+                    nueva_nota["Mín 1 año"] = min_1y
+                    nueva_nota["Target MS"] = target_morgan
+                    
+                    # Calcular score automáticamente
+                    score = calcular_score(nueva_nota, st.session_state["pesos"])
+                    nueva_nota["Score"] = score
+                    
+                    st.session_state["notas"].append(nueva_nota)
+                    st.success(f"✅ {ticker.upper()} listo con score {score}!")
+                    
+                except Exception as e:
+                    # Si hay error en la búsqueda, agregar solo los datos básicos
+                    st.session_state["notas"].append(nueva_nota)
+                    st.warning(f"⚠️ {ticker.upper()} agregado, pero hubo problemas obteniendo algunos datos de internet.")
+                    
         elif not ticker:
             st.warning("Ingrese un ticker válido.")
         elif len(st.session_state["notas"]) >= 20:
@@ -253,29 +283,7 @@ st.subheader("Notas cargadas")
 if st.session_state["notas"]:
     df = pd.DataFrame(st.session_state["notas"])
 
-    # Botón para completar datos automáticos
-    if st.button("Completar datos automáticos"):
-        with st.spinner("Buscando datos para cada ticker..."):
-            nuevas_notas = []
-            for nota in st.session_state["notas"]:
-                ticker = nota["Ticker"]
-                # --- Yahoo Finance ---
-                precio_actual, target_yhoo, hace_1_anio, min_1y = obtener_datos_yahoo(ticker)
-                # --- Morgan Stanley ---
-                target_morgan = obtener_target_morgan(ticker)
-                # Armar nueva nota con todos los datos
-                nota_actualizada = nota.copy()
-                nota_actualizada["Precio actual"] = precio_actual
-                nota_actualizada["Target Yahoo"] = target_yhoo
-                nota_actualizada["Hace 1 año"] = hace_1_anio
-                nota_actualizada["Mín 1 año"] = min_1y
-                nota_actualizada["Target MS"] = target_morgan
-                nuevas_notas.append(nota_actualizada)
-                time.sleep(1)  # Evita bloqueos por scraping agresivo
-            st.session_state["notas"] = nuevas_notas
-        st.success("Datos completados para todos los tickers.")
-
-    # Mostrar tabla actualizada con opción de edición
+    # Mostrar tabla con opción de edición
     df = pd.DataFrame(st.session_state["notas"])
     
     # Check if we have internet-sourced data to edit
@@ -308,15 +316,83 @@ if st.session_state.get("edit_mode", False):
     def edit_modal():
         st.info("Modifica solo los valores que necesites corregir. Los campos vacíos mantendrán su valor original.")
         
+        # Manejo de eliminación fuera del formulario
+        confirm_delete_index = st.session_state.get("confirm_delete_index", None)
+        if confirm_delete_index is not None:
+            ticker_to_delete = st.session_state["notas"][confirm_delete_index]["Ticker"]
+            st.warning(f"⚠️ ¿Estás seguro de eliminar {ticker_to_delete}?")
+            col1, col2, col3 = st.columns([1, 1, 2])
+            with col1:
+                if st.button(f"✅ Sí, eliminar {ticker_to_delete}", key="confirm_delete_modal"):
+                    st.session_state["notas"].pop(confirm_delete_index)
+                    st.session_state["confirm_delete_index"] = None
+                    # Si no quedan notas, cerrar el modal
+                    if len(st.session_state["notas"]) == 0:
+                        st.session_state["edit_mode"] = False
+                        st.success(f"🗑️ {ticker_to_delete} eliminado. Modal cerrado (no quedan notas).")
+                    else:
+                        st.success(f"🗑️ {ticker_to_delete} eliminado correctamente!")
+                    st.rerun()
+            with col2:
+                if st.button("❌ Cancelar", key="cancel_delete_modal"):
+                    st.session_state["confirm_delete_index"] = None
+                    st.rerun()
+        
+        # Botones de eliminación individuales
+        if len(st.session_state["notas"]) > 0:
+            st.subheader("🗑️ Eliminar notas")
+            cols = st.columns(len(st.session_state["notas"]))
+            for i, nota in enumerate(st.session_state["notas"]):
+                with cols[i]:
+                    if st.button(f"🗑️ {nota['Ticker']}", key=f"delete_modal_{i}", help=f"Eliminar {nota['Ticker']}"):
+                        st.session_state["confirm_delete_index"] = i
+                        st.rerun()
+        else:
+            st.info("No hay notas para eliminar.")
+        
+        st.divider()
+        
         # Create edit form
         with st.form("edit_form"):
             edited_notas = []
             
             for i, nota in enumerate(st.session_state["notas"]):
                 st.write(f"**{nota['Ticker']}**")
-                col1, col2, col3, col4, col5 = st.columns(5)
                 
-                # Only show editable fields for internet-sourced data
+                # Primera fila: Campos originales editables
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    tasa_edit = st.number_input(
+                        "Tasa (%)",
+                        value=float(nota.get("Tasa", 0)),
+                        min_value=0.0,
+                        max_value=100.0,
+                        step=1.0,
+                        format="%.2f",
+                        key=f"tasa_{i}",
+                        help="Tasa de interés"
+                    )
+                with col2:
+                    colchon_edit = st.number_input(
+                        "Colchón (%)",
+                        value=float(nota.get("Colchón", 0)),
+                        min_value=0.0,
+                        max_value=100.0,
+                        step=1.0,
+                        format="%.2f",
+                        key=f"colchon_{i}",
+                        help="Porcentaje de colchón"
+                    )
+                with col3:
+                    memory_edit = st.checkbox(
+                        "Memory",
+                        value=nota.get("Memory", False),
+                        key=f"memory_{i}",
+                        help="Indicador de memoria"
+                    )
+                
+                # Segunda fila: Campos de datos de internet
+                col1, col2, col3, col4, col5 = st.columns(5)
                 with col1:
                     precio_actual = st.number_input(
                         "Precio actual",
@@ -325,8 +401,7 @@ if st.session_state.get("edit_mode", False):
                         format="%.2f",
                         key=f"precio_{i}",
                         help="Precio actual de la acción"
-                    ) if nota.get("Precio actual") is not None else None
-                
+                    )
                 with col2:
                     target_yahoo = st.number_input(
                         "Target Yahoo",
@@ -335,8 +410,7 @@ if st.session_state.get("edit_mode", False):
                         format="%.2f",
                         key=f"yahoo_{i}",
                         help="Precio objetivo de Yahoo Finance"
-                    ) if nota.get("Target Yahoo") is not None else None
-                
+                    )
                 with col3:
                     hace_1_anio = st.number_input(
                         "Hace 1 año",
@@ -345,8 +419,7 @@ if st.session_state.get("edit_mode", False):
                         format="%.2f",
                         key=f"anio_{i}",
                         help="Precio hace 1 año"
-                    ) if nota.get("Hace 1 año") is not None else None
-                
+                    )
                 with col4:
                     min_1_anio = st.number_input(
                         "Mín 1 año",
@@ -355,8 +428,7 @@ if st.session_state.get("edit_mode", False):
                         format="%.2f",
                         key=f"min_{i}",
                         help="Mínimo en 1 año (52-week low)"
-                    ) if nota.get("Mín 1 año") is not None else None
-                
+                    )
                 with col5:
                     target_morgan = st.number_input(
                         "Target MS",
@@ -365,23 +437,19 @@ if st.session_state.get("edit_mode", False):
                         format="%.2f",
                         key=f"morgan_{i}",
                         help="Precio objetivo de Morgan Stanley"
-                    ) if nota.get("Target MS") is not None else None
+                    )
                 
                 # Create updated note
                 nota_editada = nota.copy()
-                if precio_actual is not None and precio_actual > 0:
-                    nota_editada["Precio actual"] = precio_actual
-                if target_yahoo is not None and target_yahoo > 0:
-                    nota_editada["Target Yahoo"] = target_yahoo
-                if hace_1_anio is not None and hace_1_anio > 0:
-                    nota_editada["Hace 1 año"] = hace_1_anio
-                if min_1_anio is not None and min_1_anio > 0:
-                    nota_editada["Mín 1 año"] = min_1_anio
-                if target_morgan is not None and target_morgan > 0:
-                    nota_editada["Target MS"] = target_morgan
-                
+                nota_editada["Tasa"] = tasa_edit
+                nota_editada["Colchón"] = colchon_edit
+                nota_editada["Memory"] = memory_edit
+                nota_editada["Precio actual"] = precio_actual if precio_actual > 0 else None
+                nota_editada["Target Yahoo"] = target_yahoo if target_yahoo > 0 else None
+                nota_editada["Hace 1 año"] = hace_1_anio if hace_1_anio > 0 else None
+                nota_editada["Mín 1 año"] = min_1_anio if min_1_anio > 0 else None
+                nota_editada["Target MS"] = target_morgan if target_morgan > 0 else None
                 edited_notas.append(nota_editada)
-                
                 if i < len(st.session_state["notas"]) - 1:
                     st.divider()
             
@@ -393,19 +461,14 @@ if st.session_state.get("edit_mode", False):
                     st.session_state["edit_mode"] = False
                     st.success("Cambios guardados exitosamente!")
                     st.rerun()
-            
             with col2:
                 if st.form_submit_button("❌ Cancelar"):
                     st.session_state["edit_mode"] = False
                     st.rerun()
-    
     edit_modal()
 
-# -- Botón para limpiar entradas --
-if st.button("Limpiar todas las notas"):
-    st.session_state["notas"] = []
-    st.session_state["reset"] = True
-    st.rerun()
+
+
 
 
 # -- Cálculo de Score (según lógica del PRD) --
