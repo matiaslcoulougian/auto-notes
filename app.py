@@ -16,6 +16,26 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# --- Common headers for web scraping ---
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9,es;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Referer": "https://www.google.com/",
+    "Connection": "keep-alive",
+}
+
 
 # --- Función auxiliar para obtener el mínimo de 52 semanas desde Yahoo Finance ---
 def obtener_min_52_semanas(ticker):
@@ -23,16 +43,10 @@ def obtener_min_52_semanas(ticker):
     Scrapes Yahoo Finance to get the 52-week low value from the 52 Week Range field.
     Returns the lower value from a range like "177.00 - 488.54" -> 177.00
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.google.com/",
-        "Connection": "keep-alive",
-    }
     url = f"https://finance.yahoo.com/quote/{ticker}"
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=BROWSER_HEADERS, timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
         
         # Look for the 52 Week Range element
@@ -102,15 +116,9 @@ def obtener_datos_yahoo(ticker):
 
 # --- Scraping Target Price Morgan Stanley ---
 def obtener_target_morgan(ticker):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.google.com/",
-        "Connection": "keep-alive",
-    }
     url = f"https://www.tipranks.com/stocks/{ticker.lower()}/forecast"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=BROWSER_HEADERS, timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
         
         # Find the table body with analyst data (React Table structure)
@@ -304,6 +312,13 @@ with st.form("input_form", clear_on_submit=True):
                     
                 except Exception as e:
                     # Si hay error en la búsqueda, agregar solo los datos básicos con score
+                    # Ensure all fields exist even if they're None
+                    nueva_nota["Precio actual"] = None
+                    nueva_nota["Target Yahoo"] = None
+                    nueva_nota["Hace 1 año"] = None
+                    nueva_nota["Mín 1 año"] = None
+                    nueva_nota["Target MS"] = None
+                    
                     score = calcular_score(nueva_nota, st.session_state["pesos"])
                     nueva_nota["Score"] = score
                     st.session_state["notas"].append(nueva_nota)
@@ -379,7 +394,8 @@ if st.session_state["notas"]:
         format_dict = {}
         for col in numeric_columns:
             if col in df.columns:
-                format_dict[col] = "{:.2f}"
+                # Use lambda to handle None values properly
+                format_dict[col] = lambda x: f"{x:.2f}" if pd.notna(x) else ""
         
         st.dataframe(
             df.style.map(color_semaforo, subset=["Score"]).format(format_dict),
@@ -391,7 +407,8 @@ if st.session_state["notas"]:
         format_dict = {}
         for col in numeric_columns:
             if col in df.columns:
-                format_dict[col] = "{:.2f}"
+                # Use lambda to handle None values properly
+                format_dict[col] = lambda x: f"{x:.2f}" if pd.notna(x) else ""
         
         st.dataframe(df.style.format(format_dict), use_container_width=True)
     
